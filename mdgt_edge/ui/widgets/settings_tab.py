@@ -8,14 +8,30 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QGridLayout, QPushButton, QLineEdit,
-    QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QRadioButton, QButtonGroup,
-    QScrollArea, QFileDialog, QMessageBox, QFrame,
+from mdgt_edge.ui.qt_compat import (
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +236,65 @@ class SettingsTab(QWidget):
         db_group.setLayout(db_layout)
         layout.addWidget(db_group)
 
+        # -- Sensor Properties section --
+        sensor_group = QGroupBox("Sensor Properties")
+        sensor_layout = QGridLayout()
+
+        # Super Dry Mode
+        self._super_dry_chk = QCheckBox("Enable Super Dry Mode")
+        self._super_dry_chk.setToolTip("Optimize capture for dry fingers")
+        sensor_layout.addWidget(self._super_dry_chk, 0, 0, 1, 2)
+
+        # Wet Finger Detection
+        self._wet_finger_chk = QCheckBox("Enable Wet Finger Detection")
+        self._wet_finger_chk.setToolTip("Detect and compensate for wet fingers")
+        sensor_layout.addWidget(self._wet_finger_chk, 1, 0)
+        wet_level_row = QHBoxLayout()
+        wet_level_row.addWidget(QLabel("Level:"))
+        self._wet_finger_level_spin = QSpinBox()
+        self._wet_finger_level_spin.setRange(1, 5)
+        self._wet_finger_level_spin.setValue(3)
+        wet_level_row.addWidget(self._wet_finger_level_spin)
+        wet_level_row.addStretch()
+        sensor_layout.addLayout(wet_level_row, 1, 1)
+
+        # Enhanced Result Image
+        self._enhanced_result_chk = QCheckBox("Enable Image Enhancement")
+        self._enhanced_result_chk.setToolTip(
+            "Apply SDK image enhancement to captured results"
+        )
+        sensor_layout.addWidget(self._enhanced_result_chk, 2, 0)
+        enhanced_level_row = QHBoxLayout()
+        enhanced_level_row.addWidget(QLabel("Level:"))
+        self._enhanced_result_level_spin = QSpinBox()
+        self._enhanced_result_level_spin.setRange(0, 5)
+        self._enhanced_result_level_spin.setValue(2)
+        enhanced_level_row.addWidget(self._enhanced_result_level_spin)
+        enhanced_level_row.addStretch()
+        sensor_layout.addLayout(enhanced_level_row, 2, 1)
+
+        # Adaptive Capture Mode
+        self._adaptive_capture_chk = QCheckBox("Enable Adaptive Capture")
+        self._adaptive_capture_chk.setToolTip(
+            "Automatically optimize capture parameters"
+        )
+        sensor_layout.addWidget(self._adaptive_capture_chk, 3, 0, 1, 2)
+
+        # Auto LED Feedback
+        self._auto_led_chk = QCheckBox("Automatic LED Feedback")
+        self._auto_led_chk.setToolTip("LED changes color based on capture events")
+        self._auto_led_chk.setChecked(True)
+        sensor_layout.addWidget(self._auto_led_chk, 4, 0, 1, 2)
+
+        # Auto Beep
+        self._auto_beep_chk = QCheckBox("Beep on Capture Events")
+        self._auto_beep_chk.setToolTip("Audio feedback on capture success/failure")
+        self._auto_beep_chk.setChecked(True)
+        sensor_layout.addWidget(self._auto_beep_chk, 5, 0, 1, 2)
+
+        sensor_group.setLayout(sensor_layout)
+        layout.addWidget(sensor_group)
+
         # -- Logging section --
         log_group = QGroupBox("Logging")
         log_layout = QGridLayout()
@@ -352,6 +427,15 @@ class SettingsTab(QWidget):
         self._model_path_edit.clear()
         self._db_path_edit.clear()
         self._log_path_edit.clear()
+        # Sensor Properties defaults
+        self._super_dry_chk.setChecked(False)
+        self._wet_finger_chk.setChecked(False)
+        self._wet_finger_level_spin.setValue(3)
+        self._enhanced_result_chk.setChecked(False)
+        self._enhanced_result_level_spin.setValue(2)
+        self._adaptive_capture_chk.setChecked(False)
+        self._auto_led_chk.setChecked(True)
+        self._auto_beep_chk.setChecked(True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -377,6 +461,15 @@ class SettingsTab(QWidget):
             "wal_mode": self._wal_chk.isChecked(),
             "log_level": self._log_level_combo.currentText(),
             "log_file": self._log_path_edit.text(),
+            # Sensor Properties
+            "super_dry_mode": self._super_dry_chk.isChecked(),
+            "wet_finger_detect": self._wet_finger_chk.isChecked(),
+            "wet_finger_level": self._wet_finger_level_spin.value(),
+            "enhanced_result": self._enhanced_result_chk.isChecked(),
+            "enhanced_result_level": self._enhanced_result_level_spin.value(),
+            "adaptive_capture": self._adaptive_capture_chk.isChecked(),
+            "auto_led_feedback": self._auto_led_chk.isChecked(),
+            "auto_beep": self._auto_beep_chk.isChecked(),
         }
 
     @pyqtSlot(dict)
@@ -421,6 +514,23 @@ class SettingsTab(QWidget):
             self._log_level_combo.setCurrentText(settings["log_level"])
         if "log_file" in settings:
             self._log_path_edit.setText(settings["log_file"])
+        # Sensor Properties
+        if "super_dry_mode" in settings:
+            self._super_dry_chk.setChecked(settings["super_dry_mode"])
+        if "wet_finger_detect" in settings:
+            self._wet_finger_chk.setChecked(settings["wet_finger_detect"])
+        if "wet_finger_level" in settings:
+            self._wet_finger_level_spin.setValue(settings["wet_finger_level"])
+        if "enhanced_result" in settings:
+            self._enhanced_result_chk.setChecked(settings["enhanced_result"])
+        if "enhanced_result_level" in settings:
+            self._enhanced_result_level_spin.setValue(settings["enhanced_result_level"])
+        if "adaptive_capture" in settings:
+            self._adaptive_capture_chk.setChecked(settings["adaptive_capture"])
+        if "auto_led_feedback" in settings:
+            self._auto_led_chk.setChecked(settings["auto_led_feedback"])
+        if "auto_beep" in settings:
+            self._auto_beep_chk.setChecked(settings["auto_beep"])
 
     def update_device_info(
         self, connected: bool, info: str = "", serial: str = ""

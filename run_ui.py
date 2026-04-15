@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch MDGT Edge PyQt5 Desktop Application."""
+"""Launch MDGT Edge desktop application."""
 import sys
 import os
 

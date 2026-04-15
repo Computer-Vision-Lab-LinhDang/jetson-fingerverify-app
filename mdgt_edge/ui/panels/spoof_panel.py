@@ -1,13 +1,27 @@
 """Spoof/PAD Detection Panel."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QPushButton, QRadioButton,
-    QButtonGroup, QFrame, QGridLayout, QSizePolicy,
+from mdgt_edge.ui.qt_compat import (
+    QButtonGroup,
+    QColor,
+    QDockWidget,
+    QFont,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPalette,
+    QPushButton,
+    QRadioButton,
+    QSizePolicy,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui import QFont, QColor, QPalette
 
 
 # ---------------------------------------------------------------------------

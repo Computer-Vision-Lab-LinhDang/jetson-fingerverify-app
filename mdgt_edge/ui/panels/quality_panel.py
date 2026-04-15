@@ -1,13 +1,27 @@
 """Quality Assessment Panel - NFIQ2 score and per-finger quality display."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QProgressBar, QFrame, QGridLayout,
+from mdgt_edge.ui.qt_compat import (
+    QBrush,
+    QColor,
+    QDockWidget,
+    QFont,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPainter,
+    QPen,
+    QProgressBar,
+    QRect,
     QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QRect
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 
 
 # ---------------------------------------------------------------------------

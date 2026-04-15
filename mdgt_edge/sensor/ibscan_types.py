@@ -645,13 +645,13 @@ class IBSM_TemplateVersion(IntEnum):
 class IBSU_ImageData(Structure):
     """Container for image data and metadata.
 
-    Mirrors the C ``IBSU_ImageData`` struct.  DWORD is mapped to c_ulong,
-    BYTE to c_ubyte, BOOL to c_int (Win32 convention).
+    Mirrors the C ``IBSU_ImageData`` struct.  DWORD = unsigned int (4 bytes
+    on all platforms), BYTE to c_ubyte, BOOL to c_int (Win32 convention).
     """
     _fields_ = [
         ("Buffer", c_void_p),
-        ("Width", c_ulong),
-        ("Height", c_ulong),
+        ("Width", c_uint),       # DWORD = unsigned int
+        ("Height", c_uint),      # DWORD = unsigned int
         ("ResolutionX", c_double),
         ("ResolutionY", c_double),
         ("FrameTime", c_double),
@@ -659,7 +659,7 @@ class IBSU_ImageData(Structure):
         ("BitsPerPixel", c_ubyte),
         ("Format", c_int),       # IBSU_ImageFormat
         ("IsFinal", c_int),      # BOOL
-        ("ProcessThres", c_ulong),
+        ("ProcessThres", c_uint), # DWORD = unsigned int
     ]
 
 

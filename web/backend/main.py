@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         vid=settings.sensor_vid,
         pid=settings.sensor_pid,
         sdk_path=settings.sensor_sdk_path,
+        remote_sensor_url=settings.remote_sensor_url,
+        remote_sensor_timeout_sec=settings.remote_sensor_timeout_sec,
     )
 
     # Initialize pipeline (load model, build FAISS index, etc.)

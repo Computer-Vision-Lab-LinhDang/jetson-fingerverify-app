@@ -5,9 +5,10 @@ Provides async wrappers around the thread-safe sensor driver so FastAPI
 endpoints can call sensor operations without blocking the event loop.
 
 Driver priority:
-  1. IBScanUltimateDriver  (from mdgt_edge.sensor.ibscan_driver)
-  2. USBSensorDriver       (old custom SDK)
-  3. MockSensorDriver      (development fallback)
+  1. RemoteSensorDriver    (optional HTTP bridge)
+  2. IBScanSensorDriver    (from mdgt_edge.sensor.ibscan_driver)
+  3. USBSensorDriver       (old custom SDK)
+  4. MockSensorDriver      (development fallback)
 """
 
 from __future__ import annotations
@@ -15,18 +16,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import subprocess
 from functools import partial
 from typing import Optional
 
 from mdgt_edge.sensor import (
     USBSensorDriver,
     MockSensorDriver,
+    RemoteSensorDriver,
     SensorDriver,
     CaptureResult,
     SensorInfo,
 )
 
 logger = logging.getLogger(__name__)
+
+IBSCAN_USB_IDS: dict[tuple[int, int], str] = {
+    (0x113F, 0x1500): "IB FIVE0 SCANNER",
+}
 
 # Cached last captured image for endpoints that operate on "last capture"
 _last_capture: Optional[CaptureResult] = None
@@ -60,12 +67,15 @@ class SensorService:
         self,
         vid: int = 0x0483,
         pid: int = 0x5720,
-        sdk_path: str = "/home/binhan3/SDK-Fingerprint-sensor",
+        sdk_path: str = "",
         use_mock: bool = False,
+        remote_sensor_url: str = "",
+        remote_sensor_timeout_sec: float = 5.0,
     ) -> bool:
         """Open the sensor. Returns True if hardware connected.
 
-        Tries IBScanUltimateDriver first, then USBSensorDriver, then MockSensorDriver.
+        Tries RemoteSensorDriver (if configured), then IBScanSensorDriver,
+        then USBSensorDriver, then MockSensorDriver.
         """
         if use_mock:
             self._driver = MockSensorDriver()
@@ -74,11 +84,30 @@ class SensorService:
             logger.info("SensorService: using MockSensorDriver")
             return True
 
-        # -- Try IBScanUltimate first -----------------------------------------
-        try:
-            from mdgt_edge.sensor.ibscan_driver import IBScanUltimateDriver  # type: ignore[import]
+        # -- Optional remote sensor bridge -----------------------------------
+        if remote_sensor_url:
+            remote_driver = RemoteSensorDriver(
+                base_url=remote_sensor_url,
+                timeout_sec=remote_sensor_timeout_sec,
+            )
+            loop = asyncio.get_running_loop()
+            remote_connected = await loop.run_in_executor(None, remote_driver.open)
+            if remote_connected:
+                self._driver = remote_driver
+                self._is_ibscan = False
+                logger.info("SensorService: connected to remote sensor at %s", remote_sensor_url)
+                return True
+            logger.warning(
+                "SensorService: remote sensor not available at %s; trying local drivers",
+                remote_sensor_url,
+            )
 
-            ibscan_driver = IBScanUltimateDriver()
+        # -- Try IBScanUltimate first -----------------------------------------
+        ibscan_usb = self._detect_ibscan_usb()
+        try:
+            from mdgt_edge.sensor.ibscan_driver import IBScanSensorDriver  # type: ignore[import]
+
+            ibscan_driver = IBScanSensorDriver()
             loop = asyncio.get_running_loop()
             connected = await loop.run_in_executor(None, ibscan_driver.open)
             if connected:
@@ -86,22 +115,42 @@ class SensorService:
                 self._is_ibscan = True
                 logger.info("SensorService: IBScanUltimate sensor connected")
                 return True
-            logger.warning("SensorService: IBScanUltimate found but failed to open")
+            logger.warning("SensorService: IBScanUltimate driver available but failed to open")
         except ImportError:
-            logger.debug("SensorService: IBScanUltimateDriver not available, trying USBSensorDriver")
+            logger.debug("SensorService: IBScanSensorDriver not available, trying USBSensorDriver")
         except Exception as exc:
             logger.warning("SensorService: IBScanUltimate init error: %s", exc)
 
         # -- Try legacy USB sensor -------------------------------------------
-        driver = USBSensorDriver(vid=vid, pid=pid, sdk_path=sdk_path)
-        loop = asyncio.get_running_loop()
-        connected = await loop.run_in_executor(None, driver.open)
+        legacy_usb_present = self._usb_device_present(vid, pid)
+        if legacy_usb_present:
+            driver = USBSensorDriver(vid=vid, pid=pid, sdk_path=sdk_path)
+            loop = asyncio.get_running_loop()
+            connected = await loop.run_in_executor(None, driver.open)
 
-        if connected:
-            self._driver = driver
-            self._is_ibscan = False
-            logger.info("SensorService: USB sensor connected")
-            return True
+            if connected:
+                self._driver = driver
+                self._is_ibscan = False
+                logger.info("SensorService: legacy USB sensor connected")
+                return True
+            logger.warning(
+                "SensorService: legacy USB sensor detected at %04x:%04x but failed to open",
+                vid,
+                pid,
+            )
+        elif ibscan_usb is not None:
+            logger.warning(
+                "SensorService: detected %s at %04x:%04x, but IBScanUltimate runtime is missing or failed to open",
+                ibscan_usb["name"],
+                ibscan_usb["vid"],
+                ibscan_usb["pid"],
+            )
+        else:
+            logger.info(
+                "SensorService: no known hardware detected. Checked legacy %04x:%04x and IBScan devices",
+                vid,
+                pid,
+            )
 
         # -- Fall back to mock -----------------------------------------------
         logger.warning(
@@ -111,6 +160,31 @@ class SensorService:
         self._driver.open()
         self._is_ibscan = False
         return False
+
+    @staticmethod
+    def _usb_device_present(vid: int, pid: int) -> bool:
+        needle = f"{vid:04x}:{pid:04x}"
+        try:
+            result = subprocess.run(
+                ["lsusb"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return False
+        return needle in result.stdout.lower()
+
+    @classmethod
+    def _detect_ibscan_usb(cls) -> Optional[dict[str, object]]:
+        for (vid, pid), name in IBSCAN_USB_IDS.items():
+            if cls._usb_device_present(vid, pid):
+                return {
+                    "vid": vid,
+                    "pid": pid,
+                    "name": name,
+                }
+        return None
 
     async def shutdown(self) -> None:
         if self._driver is not None:
@@ -127,7 +201,7 @@ class SensorService:
 
     @property
     def is_real_hardware(self) -> bool:
-        return isinstance(self._driver, (USBSensorDriver,)) or self._is_ibscan
+        return isinstance(self._driver, (USBSensorDriver, RemoteSensorDriver)) or self._is_ibscan
 
     @property
     def is_ibscan(self) -> bool:
@@ -212,16 +286,22 @@ class SensorService:
         return await loop.run_in_executor(None, self._driver.delete_all)
 
     async def get_user_count(self) -> int:
-        if not isinstance(self._driver, USBSensorDriver):
+        if self._driver is None:
+            return -1
+        method = getattr(self._driver, "get_user_count", None)
+        if not callable(method):
             return -1
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._driver.get_user_count)
+        return await loop.run_in_executor(None, method)
 
     async def get_compare_level(self) -> int:
-        if not isinstance(self._driver, USBSensorDriver):
+        if self._driver is None:
+            return -1
+        method = getattr(self._driver, "get_compare_level", None)
+        if not callable(method):
             return -1
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._driver.get_compare_level)
+        return await loop.run_in_executor(None, method)
 
     # -- IBScanUltimate-specific methods -------------------------------------
 

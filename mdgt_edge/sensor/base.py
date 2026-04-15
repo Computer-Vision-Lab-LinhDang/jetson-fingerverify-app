@@ -5,9 +5,11 @@ Abstracts vendor-specific fingerprint sensor SDKs behind a unified interface.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Tuple
 from enum import IntEnum
 import logging
+import os
 import threading
 
 
@@ -126,31 +128,77 @@ class SensorDriver(ABC):
 class USBSensorDriver(SensorDriver):
     """Thread-safe USB fingerprint sensor driver.
 
-    Communicates with the hardware sensor (VID:0x0483, PID:0x5720)
-    via the custom SDK FingerprintReader on Jetson Nano.
+    Communicates with the legacy USB sensor (VID:0x0483, PID:0x5720)
+    via the custom `fingerprint.py` SDK.
     All public methods are protected by a threading.Lock so the driver
     can be shared safely across threads (e.g. FastAPI thread-pool).
     """
 
     def __init__(self, vid: int = 0x0483, pid: int = 0x5720,
                  sdk_path: Optional[str] = None):
+        project_root = Path(__file__).resolve().parents[2]
         self._vid = vid
         self._pid = pid
-        self._sdk_path = sdk_path or "/home/binhan3/SDK-Fingerprint-sensor"
+        self._sdk_path = sdk_path or os.environ.get("MDGT_SENSOR_SDK_PATH") or str(project_root)
         self._reader = None
         self._connected = False
         self._lock = threading.Lock()
         self._logger = logging.getLogger("USBSensorDriver")
 
+    def _candidate_sdk_paths(self) -> list[str]:
+        project_root = Path(__file__).resolve().parents[2]
+        home_dir = Path.home()
+        candidates = [
+            self._sdk_path,
+            str(project_root),
+            str(home_dir),
+        ]
+        seen: set[str] = set()
+        resolved: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_path = Path(candidate).expanduser()
+            if candidate_path.is_file():
+                candidate_path = candidate_path.parent
+            key = str(candidate_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if (candidate_path / "fingerprint.py").exists():
+                resolved.append(key)
+        return resolved
+
     def open(self) -> bool:
         with self._lock:
             try:
                 import sys
-                if self._sdk_path and self._sdk_path not in sys.path:
-                    sys.path.insert(0, self._sdk_path)
-                self._logger.info("Opening sensor: sdk_path=%s", self._sdk_path)
+                sdk_candidates = self._candidate_sdk_paths()
+                if not sdk_candidates:
+                    self._logger.error(
+                        "fingerprint.py not found. Checked sdk_path=%s, project root, and home directory",
+                        self._sdk_path,
+                    )
+                    return False
 
-                from fingerprint import FingerprintReader
+                FingerprintReader = None
+                loaded_from = None
+                for candidate in sdk_candidates:
+                    if candidate not in sys.path:
+                        sys.path.insert(0, candidate)
+                    try:
+                        from fingerprint import FingerprintReader as _FingerprintReader
+                        FingerprintReader = _FingerprintReader
+                        loaded_from = candidate
+                        break
+                    except ImportError:
+                        continue
+
+                if FingerprintReader is None:
+                    self._logger.error("Failed to import FingerprintReader from candidates=%s", sdk_candidates)
+                    return False
+
+                self._logger.info("Opening legacy USB sensor: sdk_path=%s", loaded_from)
                 self._reader = FingerprintReader()
                 result = self._reader.open()
                 self._connected = bool(result)

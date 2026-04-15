@@ -9,14 +9,28 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QGridLayout, QPushButton, QLineEdit,
-    QComboBox, QProgressBar, QStackedWidget,
-    QFrame, QMessageBox, QSizePolicy,
+from mdgt_edge.ui.qt_compat import (
+    QComboBox,
+    QFont,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QImage,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPixmap,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QPixmap, QImage
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +99,90 @@ class _FingerButton(QPushButton):
                 "border-radius: 6px; padding: 6px; }"
                 "QPushButton:hover { background-color: #D5DBDB; }"
             )
+
+
+class _HandDiagram(QWidget):
+    """2D hand diagram showing which finger is being enrolled."""
+
+    # Finger positions: (x_pct, y_pct, label) for right hand (0-4) and left hand (5-9)
+    _RIGHT_FINGERS = [
+        (0.50, 0.85, "Thumb"),   # 0: R.Thumb
+        (0.35, 0.15, "Index"),   # 1: R.Index
+        (0.50, 0.05, "Middle"),  # 2: R.Middle
+        (0.65, 0.15, "Ring"),    # 3: R.Ring
+        (0.80, 0.30, "Little"),  # 4: R.Little
+    ]
+    _LEFT_FINGERS = [
+        (0.50, 0.85, "Thumb"),   # 5: L.Thumb
+        (0.65, 0.15, "Index"),   # 6: L.Index
+        (0.50, 0.05, "Middle"),  # 7: L.Middle
+        (0.35, 0.15, "Ring"),    # 8: L.Ring
+        (0.20, 0.30, "Little"),  # 9: L.Little
+    ]
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._active_finger: int = -1
+        self._enrolled_fingers: set[int] = set()
+        self.setFixedSize(320, 200)
+
+    def set_active_finger(self, finger_index: int) -> None:
+        self._active_finger = finger_index
+        self.update()
+
+    def set_enrolled(self, enrolled: set[int]) -> None:
+        self._enrolled_fingers = enrolled
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        from mdgt_edge.ui.qt_compat import QPainter, QPen, QColor, QFont, QRect
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        half = w // 2
+
+        # Draw hand labels
+        p.setPen(QPen(QColor("#2C3E50")))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
+        p.setFont(font)
+        p.drawText(QRect(0, h - 22, half, 20), Qt.AlignmentFlag.AlignCenter, "Right Hand")
+        p.drawText(QRect(half, h - 22, half, 20), Qt.AlignmentFlag.AlignCenter, "Left Hand")
+
+        font.setPointSize(8)
+        font.setBold(False)
+        p.setFont(font)
+
+        # Draw fingers
+        for base_idx, fingers, x_off in [
+            (0, self._RIGHT_FINGERS, 0),
+            (5, self._LEFT_FINGERS, half),
+        ]:
+            for i, (xp, yp, label) in enumerate(fingers):
+                fi = base_idx + i
+                cx = int(x_off + xp * half)
+                cy = int(yp * (h - 30)) + 5
+                radius = 16
+
+                # Color: active=purple, enrolled=green, default=gray
+                if fi == self._active_finger:
+                    p.setBrush(QColor("#8E44AD"))
+                    p.setPen(QPen(QColor("#6C3483"), 3))
+                elif fi in self._enrolled_fingers:
+                    p.setBrush(QColor("#27AE60"))
+                    p.setPen(QPen(QColor("#1E8449"), 2))
+                else:
+                    p.setBrush(QColor("#BDC3C7"))
+                    p.setPen(QPen(QColor("#95A5A6"), 1))
+
+                p.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+
+                # Label
+                p.setPen(QPen(QColor("white" if fi == self._active_finger or fi in self._enrolled_fingers else "#2C3E50")))
+                p.drawText(QRect(cx - 25, cy - 8, 50, 16), Qt.AlignmentFlag.AlignCenter, label)
+
+        p.end()
 
 
 class EnrollTab(QWidget):
@@ -266,7 +364,34 @@ class EnrollTab(QWidget):
         self._capture_finger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._capture_finger_label)
 
-        # Capture preview
+        # Hand diagram showing current finger
+        self._hand_diagram = _HandDiagram()
+        layout.addWidget(self._hand_diagram, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Preview row: live feed (left) + last captured (right)
+        preview_row = QHBoxLayout()
+
+        # Live preview from sensor
+        live_group = QGroupBox("Live Preview")
+        live_layout = QVBoxLayout()
+        self._live_preview = QLabel("Waiting for sensor...")
+        self._live_preview.setFixedSize(300, 300)
+        self._live_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._live_preview.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #2C3E50; "
+            "border-radius: 8px; color: #5D6D7E; font-size: 14px;"
+        )
+        live_layout.addWidget(self._live_preview)
+        self._finger_status_label = QLabel("No finger detected")
+        self._finger_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._finger_status_label.setStyleSheet("font-size: 13px; color: #E74C3C;")
+        live_layout.addWidget(self._finger_status_label)
+        live_group.setLayout(live_layout)
+        preview_row.addWidget(live_group)
+
+        # Last captured sample
+        captured_group = QGroupBox("Last Captured")
+        captured_layout = QVBoxLayout()
         self._capture_preview = QLabel("Place finger on sensor")
         self._capture_preview.setFixedSize(CAPTURE_THUMB_SIZE * 2, CAPTURE_THUMB_SIZE * 2)
         self._capture_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -274,9 +399,11 @@ class EnrollTab(QWidget):
             "background-color: #1B2631; border: 2px solid #2C3E50; "
             "border-radius: 8px; color: #5D6D7E; font-size: 14px;"
         )
-        layout.addWidget(
-            self._capture_preview, alignment=Qt.AlignmentFlag.AlignCenter
-        )
+        captured_layout.addWidget(self._capture_preview)
+        captured_group.setLayout(captured_layout)
+        preview_row.addWidget(captured_group)
+
+        layout.addLayout(preview_row)
 
         # Quality / PAD feedback
         feedback_row = QHBoxLayout()
@@ -306,7 +433,9 @@ class EnrollTab(QWidget):
         )
         layout.addWidget(self._overall_progress_label)
 
-        # Capture button
+        # Buttons row: Capture + Retake
+        btn_row = QHBoxLayout()
+
         self._capture_btn = QPushButton("Capture Sample")
         self._capture_btn.setMinimumHeight(50)
         self._capture_btn.setStyleSheet(
@@ -315,7 +444,20 @@ class EnrollTab(QWidget):
             "QPushButton:hover { background-color: #229954; }"
         )
         self._capture_btn.clicked.connect(self._on_capture_sample)
-        layout.addWidget(self._capture_btn)
+        btn_row.addWidget(self._capture_btn)
+
+        self._retake_btn = QPushButton("Retake Last")
+        self._retake_btn.setMinimumHeight(50)
+        self._retake_btn.setEnabled(False)
+        self._retake_btn.setStyleSheet(
+            "QPushButton { background-color: #E67E22; color: white; "
+            "font-size: 14px; font-weight: bold; border-radius: 8px; }"
+            "QPushButton:hover { background-color: #D35400; }"
+        )
+        self._retake_btn.clicked.connect(self._on_retake_last)
+        btn_row.addWidget(self._retake_btn)
+
+        layout.addLayout(btn_row)
 
         layout.addStretch()
         return page
@@ -498,6 +640,12 @@ class EnrollTab(QWidget):
         self._update_capture_display()
 
     def _update_capture_display(self) -> None:
+        # Track which fingers are fully enrolled
+        enrolled = {
+            s.finger_index for s in self._samples
+            if sum(1 for x in self._samples if x.finger_index == s.finger_index) >= MIN_SAMPLES_PER_FINGER
+        }
+
         if self._current_finger_idx < len(self._selected_fingers):
             finger_id = self._selected_fingers[self._current_finger_idx]
             name = FINGER_NAMES[finger_id] if finger_id < len(FINGER_NAMES) else f"Finger {finger_id}"
@@ -508,17 +656,71 @@ class EnrollTab(QWidget):
             self._overall_progress_label.setText(
                 f"Overall: {done_count} / {total_count} fingers done"
             )
+            # Update hand diagram
+            self._hand_diagram.set_active_finger(finger_id)
+            self._hand_diagram.set_enrolled(enrolled)
         else:
             self._capture_finger_label.setText("All fingers captured!")
             self._capture_btn.setEnabled(False)
+            self._hand_diagram.set_active_finger(-1)
+            self._hand_diagram.set_enrolled(enrolled)
 
     def _on_capture_sample(self) -> None:
         if self._current_finger_idx >= len(self._selected_fingers):
             return
         finger_id = self._selected_fingers[self._current_finger_idx]
         self._capture_btn.setEnabled(False)
-        self._capture_btn.setText("Capturing...")
+        self._capture_btn.setText("Place finger on sensor...")
         self.enroll_capture_requested.emit(finger_id)
+
+    def _on_retake_last(self) -> None:
+        """Remove the last captured sample and allow re-capture."""
+        if not self._samples:
+            return
+        removed = self._samples.pop()
+        # If we just moved to next finger, go back
+        if self._current_sample_num == 0 and self._current_finger_idx > 0:
+            self._current_finger_idx -= 1
+            self._current_sample_num = MIN_SAMPLES_PER_FINGER - 1
+        elif self._current_sample_num > 0:
+            self._current_sample_num -= 1
+        self._capture_progress.setValue(self._current_sample_num)
+        self._capture_btn.setEnabled(True)
+        self._capture_btn.setText("Capture Sample")
+        self._retake_btn.setEnabled(len(self._samples) > 0)
+        self._capture_preview.clear()
+        self._capture_preview.setText("Retake — place finger")
+        self._update_capture_display()
+
+    @pyqtSlot(bytes, int, int)
+    def on_preview_frame(self, image_data: bytes, width: int, height: int) -> None:
+        """Update live preview during capture step."""
+        if self._current_step != STEP_CAPTURE:
+            return
+        if not image_data or width <= 0 or height <= 0:
+            return
+        qimg = QImage(image_data, width, height, width, QImage.Format_Grayscale8)
+        if qimg.isNull():
+            return
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            300, 300,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._live_preview.setPixmap(pixmap)
+        self._live_preview.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #27AE60; border-radius: 8px;"
+        )
+
+    @pyqtSlot(int)
+    def on_finger_status(self, count: int) -> None:
+        """Update finger detection status label."""
+        if count > 0:
+            self._finger_status_label.setText(f"{count} finger(s) detected")
+            self._finger_status_label.setStyleSheet("font-size: 13px; color: #27AE60; font-weight: bold;")
+        else:
+            self._finger_status_label.setText("No finger detected")
+            self._finger_status_label.setStyleSheet("font-size: 13px; color: #E74C3C;")
 
     @pyqtSlot(object)
     def on_enroll_capture_result(self, result: object) -> None:
@@ -569,7 +771,7 @@ class EnrollTab(QWidget):
         if image_data:
             qimg = QImage(
                 image_data, width, height, width,
-                QImage.Format.Format_Grayscale8,
+                QImage.Format_Grayscale8,
             )
             pixmap = QPixmap.fromImage(qimg).scaled(
                 CAPTURE_THUMB_SIZE * 2, CAPTURE_THUMB_SIZE * 2,
@@ -594,6 +796,7 @@ class EnrollTab(QWidget):
         self._current_sample_num += 1
         self._capture_progress.setValue(self._current_sample_num)
         self._quality_feedback.setStyleSheet("font-size: 13px; color: #27AE60;")
+        self._retake_btn.setEnabled(True)
 
         # Move to next finger if enough samples
         if self._current_sample_num >= MIN_SAMPLES_PER_FINGER:
@@ -632,7 +835,7 @@ class EnrollTab(QWidget):
                     qimg = QImage(
                         sample.image_data,
                         sample.width, sample.height, sample.width,
-                        QImage.Format.Format_Grayscale8,
+                        QImage.Format_Grayscale8,
                     )
                     pixmap = QPixmap.fromImage(qimg).scaled(
                         CAPTURE_THUMB_SIZE, CAPTURE_THUMB_SIZE,

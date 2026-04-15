@@ -10,14 +10,29 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QGridLayout, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QListWidget, QListWidgetItem,
-    QSplitter, QScrollArea, QSizePolicy, QFrame,
+from mdgt_edge.ui.qt_compat import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QImage,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPixmap,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QPixmap
 
 logger = logging.getLogger(__name__)
 

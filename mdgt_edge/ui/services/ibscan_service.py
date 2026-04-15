@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Optional
 
-from PyQt6.QtCore import QThread, pyqtSignal, QMutex
+from mdgt_edge.ui.qt_compat import QMutex, QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ class CommandType(Enum):
     CLOSE = auto()
     BEGIN_CAPTURE = auto()
     CANCEL_CAPTURE = auto()
+    TAKE_RESULT = auto()
     SET_PROPERTY = auto()
     ENABLE_SPOOF = auto()
     SET_SPOOF_LEVEL = auto()
@@ -28,6 +29,11 @@ class CommandType(Enum):
     NFIQ2_INIT = auto()
     NFIQ2_SCORE = auto()
     SPOOF_CHECK = auto()
+    DUPLICATE_CHECK = auto()
+    DUPLICATE_ADD = auto()
+    FINGER_GEOMETRY = auto()
+    WSQ_ENCODE = auto()
+    ISO_CONVERT = auto()
     STOP = auto()
 
 
@@ -60,6 +66,10 @@ class IBScanService(QThread):
     property_changed = pyqtSignal(str, str)
     leds_changed = pyqtSignal(int)
     status_message = pyqtSignal(str)
+    duplicate_result = pyqtSignal(bool, int)
+    geometry_result = pyqtSignal(bool)
+    wsq_encoded = pyqtSignal(bytes)
+    iso_template_ready = pyqtSignal(bytes, int)
 
     def __init__(
         self,
@@ -97,6 +107,10 @@ class IBScanService(QThread):
     def cancel_capture(self) -> None:
         self.send_command(CommandType.CANCEL_CAPTURE)
 
+    def take_result_manually(self) -> None:
+        """Trigger manual result capture (fires capture_complete signal)."""
+        self.send_command(CommandType.TAKE_RESULT)
+
     def set_property(self, prop_id: int, value: str) -> None:
         self.send_command(CommandType.SET_PROPERTY, prop_id, value)
 
@@ -124,6 +138,56 @@ class IBScanService(QThread):
         self, image_data: bytes, width: int, height: int,
     ) -> None:
         self.send_command(CommandType.SPOOF_CHECK, image_data, width, height)
+
+    def check_duplicate(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        """Check if finger matches any image in the duplicate gallery."""
+        self.send_command(
+            CommandType.DUPLICATE_CHECK, image_data, width, height,
+            finger_pos, image_type,
+        )
+
+    def add_to_duplicate_gallery(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        """Add finger image to the duplicate-check gallery."""
+        self.send_command(
+            CommandType.DUPLICATE_ADD, image_data, width, height,
+            finger_pos, image_type,
+        )
+
+    def check_finger_geometry(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        """Validate finger positioning geometry."""
+        self.send_command(
+            CommandType.FINGER_GEOMETRY, image_data, width, height,
+            finger_pos, image_type,
+        )
+
+    def encode_wsq(
+        self, image_data: bytes, width: int, height: int,
+        pitch: int, bpp: int = 8, ppi: int = 500, bit_rate: float = 0.75,
+    ) -> None:
+        """WSQ-compress image data."""
+        self.send_command(
+            CommandType.WSQ_ENCODE, image_data, width, height,
+            pitch, bpp, ppi, bit_rate,
+        )
+
+    def convert_to_iso(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int = 0, std_format: int = 0,
+    ) -> None:
+        """Convert image to ISO/ANSI template."""
+        self.send_command(
+            CommandType.ISO_CONVERT, image_data, width, height,
+            finger_pos, std_format,
+        )
 
     def stop(self) -> None:
         """Request graceful shutdown."""
@@ -157,7 +221,7 @@ class IBScanService(QThread):
             try:
                 self._dispatch(cmd)
             except Exception as exc:
-                logger.exception("Command %s failed", cmd.type.name)
+                print(f"[SVC] Command {cmd.type.name} FAILED: {exc}", flush=True)
                 self.error_occurred.emit(str(exc), -1)
 
         self._cleanup()
@@ -202,6 +266,7 @@ class IBScanService(QThread):
             CommandType.CLOSE: self._handle_close,
             CommandType.BEGIN_CAPTURE: self._handle_begin_capture,
             CommandType.CANCEL_CAPTURE: self._handle_cancel_capture,
+            CommandType.TAKE_RESULT: self._handle_take_result,
             CommandType.SET_PROPERTY: self._handle_set_property,
             CommandType.ENABLE_SPOOF: self._handle_enable_spoof,
             CommandType.SET_SPOOF_LEVEL: self._handle_set_spoof_level,
@@ -210,6 +275,11 @@ class IBScanService(QThread):
             CommandType.NFIQ2_INIT: self._handle_nfiq2_init,
             CommandType.NFIQ2_SCORE: self._handle_nfiq2_score,
             CommandType.SPOOF_CHECK: self._handle_spoof_check,
+            CommandType.DUPLICATE_CHECK: self._handle_duplicate_check,
+            CommandType.DUPLICATE_ADD: self._handle_duplicate_add,
+            CommandType.FINGER_GEOMETRY: self._handle_finger_geometry,
+            CommandType.WSQ_ENCODE: self._handle_wsq_encode,
+            CommandType.ISO_CONVERT: self._handle_iso_convert,
         }.get(cmd.type)
 
         if handler is not None:
@@ -243,8 +313,11 @@ class IBScanService(QThread):
         self, image_type: int = 2, resolution: int = 500, options: int = 3,
     ) -> None:
         if self._driver is None:
+            print("[SVC] begin_capture: driver is None!", flush=True)
             return
+        print(f"[SVC] begin_capture type={image_type} res={resolution} opts={options} is_open={self._driver.is_open}", flush=True)
         self._driver.begin_capture(image_type, resolution, options)
+        print("[SVC] begin_capture OK", flush=True)
         self.status_message.emit("Capture started")
 
     def _handle_cancel_capture(self) -> None:
@@ -252,6 +325,13 @@ class IBScanService(QThread):
             return
         self._driver.cancel_capture()
         self.status_message.emit("Capture cancelled")
+
+    def _handle_take_result(self) -> None:
+        if self._driver is None:
+            return
+        print("[SVC] take_result_manually", flush=True)
+        self._driver.take_result_image_manually()
+        self.status_message.emit("Manual capture triggered")
 
     def _handle_set_property(self, prop_id: int, value: str) -> None:
         if self._driver is None:
@@ -303,6 +383,102 @@ class IBScanService(QThread):
             return
         is_spoof = self._driver.check_spoof_from_bytes(image_data, width, height)
         self.spoof_result.emit(is_spoof, [{"finger": 0, "is_spoof": is_spoof}])
+
+    def _handle_duplicate_check(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        if self._driver is None:
+            self.error_occurred.emit("Driver not initialized", -1)
+            return
+        try:
+            is_dup, matched_pos = self._driver.is_finger_duplicated_from_bytes(
+                image_data, width, height, finger_pos,
+            )
+            self.duplicate_result.emit(is_dup, matched_pos)
+        except Exception as exc:
+            logger.error("duplicate_check failed: %s", exc)
+            self.error_occurred.emit(f"Duplicate check failed: {exc}", -1)
+
+    def _handle_duplicate_add(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        if self._driver is None:
+            self.error_occurred.emit("Driver not initialized", -1)
+            return
+        try:
+            self._driver.add_finger_image_from_bytes(
+                image_data, width, height, finger_pos,
+            )
+            self.status_message.emit(f"Finger added to gallery (pos={finger_pos})")
+        except Exception as exc:
+            logger.error("duplicate_add failed: %s", exc)
+            self.error_occurred.emit(f"Add to gallery failed: {exc}", -1)
+
+    def _handle_finger_geometry(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int, image_type: int = 0,
+    ) -> None:
+        if self._driver is None:
+            self.error_occurred.emit("Driver not initialized", -1)
+            return
+        try:
+            import ctypes
+            from mdgt_edge.sensor.ibscan_types import IBSU_ImageData
+            buf = (ctypes.c_ubyte * len(image_data)).from_buffer_copy(image_data)
+            img = IBSU_ImageData()
+            img.Buffer = ctypes.cast(buf, ctypes.c_void_p)
+            img.Width = width
+            img.Height = height
+            img.BitsPerPixel = 8
+            img.Format = 0
+            img.Pitch = width
+            img.IsFinal = 1
+            is_valid = self._driver.is_valid_finger_geometry(img, finger_pos, image_type)
+            self.geometry_result.emit(is_valid)
+        except Exception as exc:
+            logger.error("finger_geometry failed: %s", exc)
+            self.error_occurred.emit(f"Finger geometry check failed: {exc}", -1)
+
+    def _handle_wsq_encode(
+        self, image_data: bytes, width: int, height: int,
+        pitch: int, bpp: int = 8, ppi: int = 500, bit_rate: float = 0.75,
+    ) -> None:
+        if self._driver is None:
+            self.error_occurred.emit("Driver not initialized", -1)
+            return
+        try:
+            wsq_bytes = self._driver.wsq_encode_mem(image_data, width, height, ppi, bit_rate)
+            self.wsq_encoded.emit(wsq_bytes)
+        except Exception as exc:
+            logger.error("wsq_encode failed: %s", exc)
+            self.error_occurred.emit(f"WSQ encode failed: {exc}", -1)
+
+    def _handle_iso_convert(
+        self, image_data: bytes, width: int, height: int,
+        finger_pos: int = 0, std_format: int = 0,
+    ) -> None:
+        if self._driver is None:
+            self.error_occurred.emit("Driver not initialized", -1)
+            return
+        try:
+            import ctypes
+            from mdgt_edge.sensor.ibscan_types import IBSU_ImageData
+            buf = (ctypes.c_ubyte * len(image_data)).from_buffer_copy(image_data)
+            img = IBSU_ImageData()
+            img.Buffer = ctypes.cast(buf, ctypes.c_void_p)
+            img.Width = width
+            img.Height = height
+            img.BitsPerPixel = 8
+            img.Format = 0
+            img.Pitch = width
+            img.IsFinal = 1
+            template_bytes = self._driver.convert_image_to_iso(img, finger_pos, std_format)
+            self.iso_template_ready.emit(template_bytes, std_format)
+        except Exception as exc:
+            logger.error("iso_convert failed: %s", exc)
+            self.error_occurred.emit(f"ISO convert failed: {exc}", -1)
 
     # ------------------------------------------------------------------
     # C callback handlers (called from SDK thread → emit Qt signals)

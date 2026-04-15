@@ -19,6 +19,7 @@ setup(
         "pyyaml>=6.0",
         "click>=8.1.0",
         "aiofiles>=23.0.0",
+        "pyusb>=1.2.1",
     ],
     extras_require={
         "ai": [
@@ -40,6 +41,10 @@ setup(
         ],
         "ssh": [
             "asyncssh>=2.14.0",
+        ],
+        "gui": [
+            'PyQt6>=6.5.0,<7.0; platform_machine != "aarch64"',
+            'PyQt5>=5.15.0,<6.0; platform_machine == "aarch64"',
         ],
     },
     entry_points={

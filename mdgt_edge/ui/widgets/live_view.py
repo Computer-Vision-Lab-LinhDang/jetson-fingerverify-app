@@ -8,13 +8,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QFrame, QSplitter, QPushButton,
-    QSizePolicy, QGridLayout,
+from mdgt_edge.ui.qt_compat import (
+    QColor,
+    QElapsedTimer,
+    QFont,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QImage,
+    QLabel,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer, QElapsedTimer
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont
 
 import logging
 
@@ -23,8 +39,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-PREVIEW_WIDTH = 400
-PREVIEW_HEIGHT = 400
+PREVIEW_WIDTH = 450
+PREVIEW_HEIGHT = 600
 DEFAULT_SENSOR_WIDTH = 192
 DEFAULT_SENSOR_HEIGHT = 192
 FPS_UPDATE_INTERVAL_MS = 1000
@@ -301,16 +317,42 @@ class LiveViewTab(QWidget):
 
         self._frame_count += 1
 
+        if self._frame_count <= 5:
+            print(
+                f"[PREVIEW] frame #{self._frame_count}: "
+                f"{len(image_data)} bytes, {width}x{height}",
+                flush=True,
+            )
+
+        if not image_data or width <= 0 or height <= 0:
+            return
+
+        # Keep a reference to prevent GC of underlying data
+        self._last_frame_data = image_data
+        self._last_frame_width = width
+        self._last_frame_height = height
+
         qimg = QImage(
-            image_data, width, height, width,
-            QImage.Format.Format_Grayscale8,
+            self._last_frame_data, width, height, width,
+            QImage.Format_Grayscale8,
         )
-        pixmap = QPixmap.fromImage(qimg).scaled(
+        if qimg.isNull():
+            if self._frame_count <= 5:
+                print(f"[PREVIEW] QImage NULL at frame #{self._frame_count}", flush=True)
+            return
+
+        pixmap = QPixmap.fromImage(qimg)
+        if pixmap.isNull():
+            if self._frame_count <= 5:
+                print(f"[PREVIEW] QPixmap NULL at frame #{self._frame_count}", flush=True)
+            return
+
+        scaled = pixmap.scaled(
             PREVIEW_WIDTH, PREVIEW_HEIGHT,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self._preview_label.setPixmap(pixmap)
+        self._preview_label.setPixmap(scaled)
         self._preview_label.setStyleSheet(
             "background-color: #1B2631; border: 2px solid #27AE60; "
             "border-radius: 8px;"

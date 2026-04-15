@@ -1,14 +1,28 @@
 """Device Control Panel - QDockWidget for sensor control."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QPushButton, QComboBox,
-    QCheckBox, QSpinBox, QRadioButton, QButtonGroup,
-    QToolButton, QSizePolicy, QFrame,
+from mdgt_edge.ui.qt_compat import (
+    QButtonGroup,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDockWidget,
+    QFont,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QRadioButton,
+    QSizePolicy,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QColor
 
 
 class DeviceControlPanel(QDockWidget):

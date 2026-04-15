@@ -31,9 +31,14 @@ class Settings(BaseSettings):
     identify_top_k: int = 5
 
     # --- Sensor ---
-    sensor_vid: int = Field(default=0x0483, description="Sensor USB Vendor ID")
-    sensor_pid: int = Field(default=0x5720, description="Sensor USB Product ID")
-    sensor_sdk_path: str = "/home/binhan3/SDK-Fingerprint-sensor"
+    sensor_vid: int = Field(default=0x0483, description="Legacy sensor USB Vendor ID")
+    sensor_pid: int = Field(default=0x5720, description="Legacy sensor USB Product ID")
+    sensor_sdk_path: str = ""
+    remote_sensor_url: str = Field(
+        default="",
+        description="Optional remote sensor base URL (for example http://host:8000/api/v1/sensor)",
+    )
+    remote_sensor_timeout_sec: float = 5.0
 
     # --- CORS ---
     cors_origins: list[str] = [

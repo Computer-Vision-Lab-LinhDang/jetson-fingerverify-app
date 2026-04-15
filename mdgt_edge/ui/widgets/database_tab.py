@@ -9,15 +9,31 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QGridLayout, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QLineEdit,
-    QComboBox, QSplitter, QMessageBox, QFileDialog,
-    QFrame, QSpinBox, QSizePolicy,
+from mdgt_edge.ui.qt_compat import (
+    QColor,
+    QComboBox,
+    QFileDialog,
+    QFont,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont
 
 logger = logging.getLogger(__name__)
 

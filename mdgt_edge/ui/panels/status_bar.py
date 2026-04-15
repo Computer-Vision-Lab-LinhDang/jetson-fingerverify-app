@@ -1,12 +1,19 @@
 """Enhanced Status Bar with multiple permanent sections."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
-    QStatusBar, QLabel, QWidget, QHBoxLayout,
-    QProgressBar, QFrame,
+from mdgt_edge.ui.qt_compat import (
+    QColor,
+    QFont,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QStatusBar,
+    QTimer,
+    QWidget,
+    Qt,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSlot, QTimer
-from PyQt6.QtGui import QFont, QColor
 
 
 class _SectionLabel(QLabel):

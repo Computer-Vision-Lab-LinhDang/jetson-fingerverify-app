@@ -10,14 +10,30 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QGroupBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QCheckBox, QSplitter,
-    QFrame, QSizePolicy,
+from mdgt_edge.ui.qt_compat import (
+    QCheckBox,
+    QColor,
+    QFont,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QImage,
+    QLabel,
+    QPixmap,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui import QColor, QFont, QImage, QPixmap
 
 logger = logging.getLogger(__name__)
 
@@ -122,46 +138,72 @@ class IdentifyTab(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter)
 
-        # -- Left: probe image + controls --
+        # -- Left: live preview + probe/match + controls --
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
+        # Live preview from sensor
         left_layout.addWidget(
-            QLabel("Probe Image"),
-            alignment=Qt.AlignmentFlag.AlignCenter,
+            QLabel("Live Preview"), alignment=Qt.AlignmentFlag.AlignCenter,
         )
-
-        self._probe_label = QLabel("No probe")
-        self._probe_label.setFixedSize(PROBE_DISPLAY_SIZE, PROBE_DISPLAY_SIZE)
-        self._probe_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._probe_label.setStyleSheet(
+        self._live_preview = QLabel("Place finger on sensor")
+        self._live_preview.setFixedSize(PROBE_DISPLAY_SIZE + 40, PROBE_DISPLAY_SIZE + 40)
+        self._live_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._live_preview.setStyleSheet(
             "background-color: #1B2631; border: 2px solid #2C3E50; "
             "border-radius: 8px; color: #5D6D7E; font-size: 14px;"
         )
         left_layout.addWidget(
-            self._probe_label, alignment=Qt.AlignmentFlag.AlignCenter
+            self._live_preview, alignment=Qt.AlignmentFlag.AlignCenter
         )
 
-        # Match / no-match indicator
+        # Probe + Best Match side by side
+        compare_row = QHBoxLayout()
+        thumb_size = PROBE_DISPLAY_SIZE // 2 + 20
+
+        probe_col = QVBoxLayout()
+        probe_col.addWidget(QLabel("Captured"), alignment=Qt.AlignmentFlag.AlignCenter)
+        self._probe_label = QLabel("--")
+        self._probe_label.setFixedSize(thumb_size, thumb_size)
+        self._probe_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._probe_label.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #2C3E50; "
+            "border-radius: 6px; color: #5D6D7E; font-size: 12px;"
+        )
+        probe_col.addWidget(self._probe_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        compare_row.addLayout(probe_col)
+
+        match_col = QVBoxLayout()
+        match_col.addWidget(QLabel("Best Match"), alignment=Qt.AlignmentFlag.AlignCenter)
+        self._match_image_label = QLabel("--")
+        self._match_image_label.setFixedSize(thumb_size, thumb_size)
+        self._match_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._match_image_label.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #2C3E50; "
+            "border-radius: 6px; color: #5D6D7E; font-size: 12px;"
+        )
+        match_col.addWidget(self._match_image_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        compare_row.addLayout(match_col)
+
+        left_layout.addLayout(compare_row)
+
+        # Match indicator + latency
         self._match_indicator = QLabel("--")
         self._match_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._match_indicator.setStyleSheet(
-            "font-size: 24px; font-weight: bold; color: #7F8C8D; padding: 8px;"
+            "font-size: 22px; font-weight: bold; color: #7F8C8D; padding: 4px;"
         )
         left_layout.addWidget(self._match_indicator)
 
-        # Latency
         self._latency_label = QLabel("Latency: -- ms")
         self._latency_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._latency_label.setStyleSheet(
-            "font-size: 13px; color: #5D6D7E;"
-        )
+        self._latency_label.setStyleSheet("font-size: 13px; color: #5D6D7E;")
         left_layout.addWidget(self._latency_label)
 
         # Identify button
         self._identify_btn = QPushButton("IDENTIFY")
-        self._identify_btn.setMinimumHeight(60)
+        self._identify_btn.setMinimumHeight(50)
         self._identify_btn.setStyleSheet(
             "QPushButton { background-color: #8E44AD; color: white; "
             "font-size: 20px; font-weight: bold; border-radius: 10px; }"
@@ -250,26 +292,44 @@ class IdentifyTab(QWidget):
     # ------------------------------------------------------------------
 
     @pyqtSlot(bytes, int, int)
+    def on_preview_frame(self, image_data: bytes, width: int, height: int) -> None:
+        """Update live preview from sensor."""
+        if not image_data or width <= 0 or height <= 0:
+            return
+        qimg = QImage(image_data, width, height, width, QImage.Format_Grayscale8)
+        if qimg.isNull():
+            return
+        live_size = PROBE_DISPLAY_SIZE + 40
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            live_size, live_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._live_preview.setPixmap(pixmap)
+        self._live_preview.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #27AE60; border-radius: 8px;"
+        )
+
+    @pyqtSlot(bytes, int, int)
     def on_probe_image(
         self, image_data: bytes, width: int, height: int
     ) -> None:
-        """Display the probe fingerprint image."""
+        """Display the captured probe fingerprint image."""
         if not image_data:
             return
-
+        thumb_size = PROBE_DISPLAY_SIZE // 2 + 20
         qimg = QImage(
             image_data, width, height, width,
-            QImage.Format.Format_Grayscale8,
+            QImage.Format_Grayscale8,
         )
         pixmap = QPixmap.fromImage(qimg).scaled(
-            PROBE_DISPLAY_SIZE, PROBE_DISPLAY_SIZE,
+            thumb_size, thumb_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self._probe_label.setPixmap(pixmap)
         self._probe_label.setStyleSheet(
-            "background-color: #1B2631; border: 2px solid #2980B9; "
-            "border-radius: 8px;"
+            "background-color: #1B2631; border: 2px solid #2980B9; border-radius: 6px;"
         )
 
     @pyqtSlot(list)
@@ -401,6 +461,29 @@ class IdentifyTab(QWidget):
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
+
+    @pyqtSlot(bytes, int, int)
+    def on_match_image(self, image_data: bytes, width: int, height: int) -> None:
+        """Display the best matched fingerprint image."""
+        thumb_size = PROBE_DISPLAY_SIZE // 2 + 20
+        if not image_data or width <= 0 or height <= 0:
+            self._match_image_label.clear()
+            self._match_image_label.setText("--")
+            self._match_image_label.setStyleSheet(
+                "background-color: #1B2631; border: 2px solid #2C3E50; "
+                "border-radius: 6px; color: #5D6D7E; font-size: 12px;"
+            )
+            return
+        qimg = QImage(image_data, width, height, width, QImage.Format_Grayscale8)
+        pixmap = QPixmap.fromImage(qimg).scaled(
+            thumb_size, thumb_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._match_image_label.setPixmap(pixmap)
+        self._match_image_label.setStyleSheet(
+            "background-color: #1B2631; border: 2px solid #27AE60; border-radius: 6px;"
+        )
 
     def set_threshold(self, threshold: float) -> None:
         """Update the identification threshold."""

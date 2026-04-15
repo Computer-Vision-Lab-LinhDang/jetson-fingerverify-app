@@ -6,6 +6,7 @@ high-level IBScanSensorDriver (implements SensorDriver ABC).
 """
 import ctypes
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,6 +116,8 @@ class IBScanUltimateDriver:
         "/usr/lib",
         "/usr/local/lib",
         "/usr/lib/aarch64-linux-gnu",
+        "/opt/IBScanUltimate/lib",
+        "/opt/IBScanUltimate/lib/aarch64-linux-gnu",
     ]
 
     def __init__(
@@ -159,6 +162,16 @@ class IBScanUltimateDriver:
     def _find_lib(self, name: str, explicit: Optional[str]) -> Optional[str]:
         if explicit:
             p = Path(explicit)
+            if p.is_file():
+                return str(p)
+        env_dirs = [
+            os.environ.get("MDGT_IBSCAN_LIB_DIR"),
+            os.environ.get("IBSCAN_LIB_DIR"),
+        ]
+        for d in env_dirs:
+            if not d:
+                continue
+            p = Path(d) / name
             if p.is_file():
                 return str(p)
         for d in self._LIB_SEARCH_PATHS:
@@ -280,11 +293,11 @@ class IBScanUltimateDriver:
         lib.IBSU_GetLEDs.restype = ctypes.c_int
 
         # --- Beeper ---
-        lib.IBSU_BeeperControl.argtypes = [
-            ctypes.c_int, ctypes.c_uint, ctypes.c_int,
-            ctypes.c_uint, ctypes.c_uint,
+        lib.IBSU_SetBeeper.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ]
-        lib.IBSU_BeeperControl.restype = ctypes.c_int
+        lib.IBSU_SetBeeper.restype = ctypes.c_int
 
         # --- Callbacks ---
         lib.IBSU_RegisterCallbacks.argtypes = [
@@ -837,16 +850,15 @@ class IBScanUltimateDriver:
         self,
         duration_ms: int = 100,
         pattern: int = 0,
-        on_period: int = 50,
-        off_period: int = 50,
+        sound_tone: int = 0,
     ) -> None:
         with self._lock:
             self._require_open()
-            rc = self._lib.IBSU_BeeperControl(
-                self._handle, duration_ms, pattern, on_period, off_period,
+            rc = self._lib.IBSU_SetBeeper(
+                self._handle, pattern, sound_tone, duration_ms, 0, 0,
             )
             if rc != IBSU_STATUS_OK:
-                logger.debug("BeeperControl: %s", error_code_to_name(rc))
+                logger.debug("SetBeeper: %s", error_code_to_name(rc))
 
     # ------------------------------------------------------------------
     # Image export (to file)
@@ -1230,6 +1242,11 @@ class IBScanSensorDriver(SensorDriver):
 
     def open(self) -> bool:
         try:
+            if self._driver._lib is None:
+                self._logger.warning(
+                    "IBScan runtime not loaded; install libIBScanUltimate.so for the target architecture"
+                )
+                return False
             count = self._driver.get_device_count()
             if count <= 0:
                 self._logger.warning("No IBScan devices found")
