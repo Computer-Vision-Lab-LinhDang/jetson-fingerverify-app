@@ -752,7 +752,7 @@ class MDGTEdgeMainWindow(QMainWindow):
         name = self._enroll_tab._edit_full_name.text().strip()
         dept = self._enroll_tab._combo_department.currentText()
 
-        # Find or create user in SQLite
+        # Find or create user in SQLite — warn on duplicate employee_id
         db_user = self._user_repo.get_by_employee_id(employee_id)
         if db_user is None:
             db_user = self._user_repo.create(User(
@@ -763,7 +763,24 @@ class MDGTEdgeMainWindow(QMainWindow):
             ))
             print(f"[ENROLL] created user id={db_user.id}", flush=True)
         else:
-            print(f"[ENROLL] found existing user id={db_user.id}", flush=True)
+            print(f"[ENROLL] DUPLICATE employee_id: existing user id={db_user.id} name='{db_user.full_name}'", flush=True)
+            reply = QMessageBox.question(
+                self,
+                "Employee ID already exists",
+                f"Employee ID <b>{employee_id}</b> is already registered as "
+                f"<b>{db_user.full_name}</b> (id={db_user.id}).<br><br>"
+                f"Add these fingerprints to that existing user, or cancel "
+                f"and re-enter a different Employee ID?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage(
+                    f"Enrollment cancelled — Employee ID '{employee_id}' already exists",
+                    5000,
+                )
+                self._auto_led_feedback("capture_fail")
+                return
 
         added = 0
         queued = 0
