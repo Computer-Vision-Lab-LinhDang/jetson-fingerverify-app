@@ -114,6 +114,12 @@ class MDGTEdgeMainWindow(QMainWindow):
         self._auto_led = True
         self._auto_beep = True
 
+        # Shared frame buffer — decouples enroll/identify from LiveView tab
+        # so triggering capture on one tab doesn't force another into streaming UI.
+        self._last_frame_data: Optional[bytes] = None
+        self._last_frame_width: int = 0
+        self._last_frame_height: int = 0
+
         # FAISS gallery for identification
         # Database + FAISS gallery
         from mdgt_edge.pipeline.faiss_index import FAISSIndexManager
@@ -390,6 +396,8 @@ class MDGTEdgeMainWindow(QMainWindow):
         svc.preview_frame.connect(self._live_view_tab.on_preview_frame)
         svc.preview_frame.connect(self._enroll_tab.on_preview_frame)
         svc.preview_frame.connect(self._identify_tab.on_preview_frame)
+        # Shared frame cache (independent of LiveView streaming state)
+        svc.preview_frame.connect(self._cache_preview_frame)
         svc.finger_count_changed.connect(self._live_view_tab.on_finger_count_changed)
         svc.finger_count_changed.connect(self._enroll_tab.on_finger_status)
         svc.finger_count_changed.connect(self._on_finger_count_for_enroll)
@@ -556,21 +564,23 @@ class MDGTEdgeMainWindow(QMainWindow):
         self._sensor_service.begin_capture(image_type, resolution, 1)
 
     def _on_enroll_capture(self, finger_index: int) -> None:
-        """Capture current preview frame immediately for enrollment."""
-        from dataclasses import dataclass
+        """Capture current preview frame immediately for enrollment.
+
+        Starts the sensor stream if needed but does NOT touch the LiveView
+        tab UI — frame cache lives on MainWindow so tabs stay independent.
+        """
         print(f"[ENROLL] capture finger={finger_index}", flush=True)
         self._pending_enroll_finger = finger_index
 
-        # Ensure device open + streaming
+        # Ensure device open + sensor capturing
         if not self._sensor_service.is_device_open:
             self._sensor_service.open_device(0)
             self.statusBar().showMessage("Opening sensor...", 3000)
             QTimer.singleShot(2000, lambda: self._do_enroll_grab(finger_index))
             return
-        if not self._live_view_tab.is_streaming:
+        if self._last_frame_data is None:
             self._sensor_service.begin_capture(1, 500, 1)
-            self._live_view_tab.start_preview()
-            self.statusBar().showMessage("Starting preview... try again in 2s", 3000)
+            self.statusBar().showMessage("Starting sensor... try again in 2s", 3000)
             self._enroll_tab._capture_btn.setEnabled(True)
             self._enroll_tab._capture_btn.setText("Capture Sample")
             return
@@ -581,9 +591,9 @@ class MDGTEdgeMainWindow(QMainWindow):
         """Grab the current live preview frame for enrollment."""
         from dataclasses import dataclass
 
-        last_data = getattr(self._live_view_tab, "_last_frame_data", None)
-        last_w = getattr(self._live_view_tab, "_last_frame_width", 0)
-        last_h = getattr(self._live_view_tab, "_last_frame_height", 0)
+        last_data = self._last_frame_data
+        last_w = self._last_frame_width
+        last_h = self._last_frame_height
 
         if not last_data or last_w <= 0 or last_h <= 0:
             print(f"[ENROLL] no frame (data={bool(last_data)} w={last_w} h={last_h})", flush=True)
@@ -624,6 +634,18 @@ class MDGTEdgeMainWindow(QMainWindow):
         """Update enroll tab finger status (display only)."""
         pass
 
+    def _cache_preview_frame(self, image_data: bytes, width: int, height: int) -> None:
+        """Cache the most recent sensor frame so any tab can grab it.
+
+        Runs regardless of which tab is active — replaces the previous
+        coupling that relied on LiveView tab being in streaming state.
+        """
+        if not image_data or width <= 0 or height <= 0:
+            return
+        self._last_frame_data = image_data
+        self._last_frame_width = width
+        self._last_frame_height = height
+
     def _on_capture_complete_dispatch(self, result: object) -> None:
         """Route capture_complete to the correct tab based on pending mode."""
         mode = getattr(self, "_pending_capture_mode", None)
@@ -644,15 +666,17 @@ class MDGTEdgeMainWindow(QMainWindow):
             self._auto_led_feedback("capture_success")
 
     def _on_identify_requested(self) -> None:
-        """Handle identify tab requesting 1:N identification."""
+        """Handle identify tab requesting 1:N identification.
+
+        Starts the sensor stream if needed without forcing the LiveView tab UI.
+        """
         if not self._sensor_service.is_device_open:
             self._identify_tab.on_identify_results([])
             self.statusBar().showMessage("No sensor connected", 3000)
             return
-        # Auto-start preview if not streaming
-        if not self._live_view_tab.is_streaming:
+        # Start sensor capture if no frame in cache yet
+        if self._last_frame_data is None:
             self._sensor_service.begin_capture(1, 500, 3)
-            self._live_view_tab.start_preview()
         self.statusBar().showMessage(
             "Place finger on sensor... identifying in 2s", 5000
         )
@@ -660,9 +684,9 @@ class MDGTEdgeMainWindow(QMainWindow):
 
     def _do_identify_snapshot(self) -> None:
         """Take a snapshot, extract embedding, and run FAISS search."""
-        last_data = getattr(self._live_view_tab, "_last_frame_data", None)
-        last_w = getattr(self._live_view_tab, "_last_frame_width", 0)
-        last_h = getattr(self._live_view_tab, "_last_frame_height", 0)
+        last_data = self._last_frame_data
+        last_w = self._last_frame_width
+        last_h = self._last_frame_height
         if not last_data or last_w <= 0 or last_h <= 0:
             self.statusBar().showMessage("No finger on sensor. Try again.", 3000)
             self._identify_tab.on_identify_results([])
