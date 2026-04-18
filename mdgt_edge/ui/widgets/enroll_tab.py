@@ -60,6 +60,7 @@ MIN_SAMPLES_PER_FINGER = 3
 CAPTURE_THUMB_SIZE = 128
 QUALITY_THRESHOLD_DEFAULT = 40
 NFIQ2_THRESHOLD_DEFAULT = 30
+MIN_MINUTIAE_DEFAULT = 12
 
 
 @dataclass(frozen=True)
@@ -201,7 +202,35 @@ class EnrollTab(QWidget):
         self._current_finger_idx = 0
         self._current_sample_num = 0
 
+        # Configurable quality gates (updated from Settings tab)
+        self._quality_threshold: int = QUALITY_THRESHOLD_DEFAULT
+        self._nfiq2_threshold: int = NFIQ2_THRESHOLD_DEFAULT
+        self._min_minutiae: int = MIN_MINUTIAE_DEFAULT
+
         self._init_ui()
+
+    # ------------------------------------------------------------------
+    # Configuration hooks
+    # ------------------------------------------------------------------
+
+    def set_quality_gates(
+        self,
+        *,
+        quality_threshold: Optional[int] = None,
+        nfiq2_threshold: Optional[int] = None,
+        min_minutiae: Optional[int] = None,
+    ) -> None:
+        """Override the built-in quality gate thresholds (from Settings tab)."""
+        if quality_threshold is not None:
+            self._quality_threshold = int(quality_threshold)
+        if nfiq2_threshold is not None:
+            self._nfiq2_threshold = int(nfiq2_threshold)
+        if min_minutiae is not None:
+            self._min_minutiae = int(min_minutiae)
+        logger.info(
+            "quality gates updated: quality>=%d nfiq2>=%d minutiae>=%d",
+            self._quality_threshold, self._nfiq2_threshold, self._min_minutiae,
+        )
 
     # ------------------------------------------------------------------
     # UI construction
@@ -749,12 +778,12 @@ class EnrollTab(QWidget):
         self._pad_feedback.setText(f"PAD: {pad_text}")
         self._pad_feedback.setStyleSheet(f"font-size: 13px; color: {pad_color};")
 
-        # Quality gate
-        if quality < QUALITY_THRESHOLD_DEFAULT:
+        # Quality gate (configurable via Settings tab)
+        if quality < self._quality_threshold:
             self._quality_feedback.setStyleSheet("font-size: 13px; color: #E74C3C;")
             QMessageBox.warning(
                 self, "Quality Too Low",
-                f"Quality {quality} is below threshold {QUALITY_THRESHOLD_DEFAULT}. "
+                f"Quality {quality} is below threshold {self._quality_threshold}. "
                 "Please try again.",
             )
             return

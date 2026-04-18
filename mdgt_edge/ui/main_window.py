@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -60,7 +60,10 @@ GALLERY_DIR = os.path.expanduser("~/.mdgt_edge")
 IMAGES_DIR = os.path.join(GALLERY_DIR, "images")
 INDEX_PATH = os.path.join(GALLERY_DIR, "gallery.faiss")
 USERS_PATH = os.path.join(GALLERY_DIR, "enrolled_users.json")
-MATCH_THRESHOLD = 0.5
+# Default thresholds (overridden at runtime by Settings tab / ConfigRepository)
+DEFAULT_VERIFY_THRESHOLD = 0.55
+DEFAULT_IDENTIFY_THRESHOLD = 0.5
+DEFAULT_IDENTIFY_TOP_K = 5
 
 TAB_LIVE_VIEW = 0
 TAB_CAPTURE = 1
@@ -120,14 +123,22 @@ class MDGTEdgeMainWindow(QMainWindow):
         self._last_frame_width: int = 0
         self._last_frame_height: int = 0
 
+        # Runtime-configurable thresholds (Settings tab writes these)
+        self._verify_threshold: float = DEFAULT_VERIFY_THRESHOLD
+        self._identify_threshold: float = DEFAULT_IDENTIFY_THRESHOLD
+        self._identify_top_k: int = DEFAULT_IDENTIFY_TOP_K
+
         # FAISS gallery for identification
         # Database + FAISS gallery
         from mdgt_edge.pipeline.faiss_index import FAISSIndexManager
         from mdgt_edge.database.database import DatabaseManager
-        from mdgt_edge.database.repository import UserRepository, FingerprintRepository
+        from mdgt_edge.database.repository import (
+            UserRepository, FingerprintRepository, ConfigRepository,
+        )
         self._db = DatabaseManager("data/mdgt_edge.db")
         self._user_repo = UserRepository(self._db)
         self._fp_repo = FingerprintRepository(self._db)
+        self._config_repo = ConfigRepository(self._db)
         self._faiss_index = FAISSIndexManager(dim=256)
         self._enrolled_users: dict[int, dict] = {}
         self._next_fp_id = 1
@@ -470,6 +481,7 @@ class MDGTEdgeMainWindow(QMainWindow):
             (50, "Loading AI model...", self._load_model),
             (70, "Loading gallery...", self._load_gallery),
             (85, "Loading database...", self._refresh_database_tab),
+            (95, "Applying saved settings...", self._load_persisted_settings),
             (100, "Ready!", lambda: None),
         ]
 
@@ -711,7 +723,7 @@ class MDGTEdgeMainWindow(QMainWindow):
         try:
             tensor = self._preprocess_for_model(raw, last_w, last_h)
             embedding = self._inference.infer_image(tensor)
-            hits = self._faiss_index.search(embedding, top_k=5)
+            hits = self._faiss_index.search(embedding, top_k=self._identify_top_k)
             print(f"[IDENTIFY] {len(hits)} hits: {hits}", flush=True)
 
             results = []
@@ -726,7 +738,7 @@ class MDGTEdgeMainWindow(QMainWindow):
                     "employee_id": emp_id,
                     "department": info.get("department", ""),
                     "score": float(score),
-                    "is_match": False if is_fvc else float(score) >= MATCH_THRESHOLD,
+                    "is_match": False if is_fvc else float(score) >= self._identify_threshold,
                 })
             self._identify_tab.on_identify_results(results)
 
@@ -903,24 +915,47 @@ class MDGTEdgeMainWindow(QMainWindow):
             )
 
     def _on_settings_applied(self, settings: dict) -> None:
-        """Apply settings to sensor service."""
+        """Apply settings to sensor, pipeline, thresholds, and persist to DB."""
+        from mdgt_edge.sensor.ibscan_types import IBSU_PropertyId
         svc = self._sensor_service
         print(f"[SETTINGS] applying: {list(settings.keys())}", flush=True)
 
-        # PAD settings
-        if "pad_enabled" in settings:
-            svc.enable_spoof(settings["pad_enabled"])
-        if "spoof_level" in settings:
-            svc.set_spoof_level(settings["spoof_level"])
+        # --- Thresholds (identify/verify) ---
+        if "verify_threshold" in settings:
+            self._verify_threshold = float(settings["verify_threshold"])
+        if "identify_threshold" in settings:
+            self._identify_threshold = float(settings["identify_threshold"])
+            try:
+                self._identify_tab.set_threshold(self._identify_threshold)
+            except Exception:
+                pass
+        if "top_k" in settings:
+            self._identify_top_k = int(settings["top_k"])
 
-        # Device properties via set_property
-        prop_map = {
-            "super_dry_mode": (30, lambda v: "TRUE" if v else "FALSE"),  # ENUM_IBSU_PROPERTY_SUPER_DRY_MODE
-            "wet_finger_detect": (32, lambda v: "TRUE" if v else "FALSE"),
-            "wet_finger_level": (33, lambda v: str(v)),
-            "enhanced_result": (34, lambda v: "TRUE" if v else "FALSE"),
-            "enhanced_result_level": (35, lambda v: str(v)),
-            "adaptive_capture": (36, lambda v: "TRUE" if v else "FALSE"),
+        # --- Quality gates ---
+        try:
+            self._enroll_tab.set_quality_gates(
+                quality_threshold=settings.get("min_nfiq2"),
+                nfiq2_threshold=settings.get("min_nfiq2"),
+                min_minutiae=settings.get("min_minutiae"),
+            )
+        except Exception as exc:
+            print(f"[SETTINGS] quality gates failed: {exc}", flush=True)
+
+        # --- PAD / spoof ---
+        if "pad_enabled" in settings:
+            svc.enable_spoof(bool(settings["pad_enabled"]))
+        if "spoof_level" in settings:
+            svc.set_spoof_level(int(settings["spoof_level"]))
+
+        # --- Sensor device properties (correct SDK enum IDs) ---
+        prop_map: dict[str, tuple[int, Any]] = {
+            "super_dry_mode":        (IBSU_PropertyId.SUPER_DRY_MODE.value,                  lambda v: "TRUE" if v else "FALSE"),
+            "wet_finger_detect":     (IBSU_PropertyId.ENABLE_WET_FINGER_DETECT.value,        lambda v: "TRUE" if v else "FALSE"),
+            "wet_finger_level":      (IBSU_PropertyId.WET_FINGER_DETECT_LEVEL.value,         lambda v: str(int(v))),
+            "enhanced_result":       (IBSU_PropertyId.RESERVED_ENHANCED_RESULT_IMAGE.value,  lambda v: "TRUE" if v else "FALSE"),
+            "enhanced_result_level": (IBSU_PropertyId.RESERVED_ENHANCED_RESULT_IMAGE_LEVEL.value, lambda v: str(int(v))),
+            "adaptive_capture":      (IBSU_PropertyId.ADAPTIVE_CAPTURE_MODE.value,           lambda v: "TRUE" if v else "FALSE"),
         }
         applied = 0
         for key, (prop_id, converter) in prop_map.items():
@@ -928,14 +963,48 @@ class MDGTEdgeMainWindow(QMainWindow):
                 try:
                     svc.set_property(prop_id, converter(settings[key]))
                     applied += 1
+                    print(f"[SETTINGS] set prop {key}(id={prop_id})={converter(settings[key])}", flush=True)
                 except Exception as exc:
                     print(f"[SETTINGS] property {key} failed: {exc}", flush=True)
 
-        # Store LED/beep preferences
-        self._auto_led = settings.get("auto_led_feedback", True)
-        self._auto_beep = settings.get("auto_beep", True)
+        # --- LED / beep preferences (consumed by _auto_led_feedback) ---
+        self._auto_led = bool(settings.get("auto_led_feedback", True))
+        self._auto_beep = bool(settings.get("auto_beep", True))
 
-        self.statusBar().showMessage(f"Settings applied ({applied} device properties)", 3000)
+        # --- Persist everything to ConfigRepository so it survives restart ---
+        try:
+            self._config_repo.set_many({
+                f"ui.{k}": v for k, v in settings.items()
+            })
+        except Exception as exc:
+            print(f"[SETTINGS] persist failed: {exc}", flush=True)
+
+        self.statusBar().showMessage(
+            f"Settings applied ({applied} sensor props, "
+            f"verify={self._verify_threshold:.2f}, "
+            f"identify={self._identify_threshold:.2f})",
+            4000,
+        )
+
+    def _load_persisted_settings(self) -> None:
+        """Load settings from ConfigRepository on startup and apply them."""
+        try:
+            all_cfg = self._config_repo.get_all_as_dict()
+        except Exception as exc:
+            print(f"[SETTINGS] load failed: {exc}", flush=True)
+            return
+        ui_cfg = {
+            k[len("ui."):]: v for k, v in all_cfg.items() if k.startswith("ui.")
+        }
+        if not ui_cfg:
+            return
+        print(f"[SETTINGS] loaded {len(ui_cfg)} keys from DB", flush=True)
+        try:
+            self._settings_tab.load_settings(ui_cfg)
+        except Exception as exc:
+            print(f"[SETTINGS] load_settings UI failed: {exc}", flush=True)
+        # Apply without going through UI so sensor gets them early
+        self._on_settings_applied(ui_cfg)
 
     def _auto_led_feedback(self, event: str) -> None:
         """Automatic LED + beeper feedback on events."""
