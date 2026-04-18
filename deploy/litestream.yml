@@ -1,0 +1,32 @@
+# Litestream configuration for MDGT Edge SQLite replication.
+#
+# Replicates data/mdgt_edge.db continuously to an S3-compatible bucket.
+# Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi, etc.
+#
+# Credentials are read from environment variables (set them in the
+# mdgt-litestream.service unit or /etc/default/mdgt-litestream):
+#   LITESTREAM_ACCESS_KEY_ID
+#   LITESTREAM_SECRET_ACCESS_KEY
+#   LITESTREAM_BUCKET
+#   LITESTREAM_ENDPOINT        (optional, for non-AWS S3 providers)
+#   LITESTREAM_DEVICE_ID       (unique per Jetson, e.g. "edge-001")
+
+dbs:
+  - path: /opt/mdgt-edge/data/mdgt_edge.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: mdgt-edge/${LITESTREAM_DEVICE_ID}/mdgt_edge.db
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: ${LITESTREAM_REGION:-auto}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+
+        # How often to sync (default 1s — fine for low write volume)
+        sync-interval: 1s
+
+        # Retain full history for 72h so we can roll back if needed
+        retention: 72h
+
+        # Snapshot every 24h (bounds restore time)
+        snapshot-interval: 24h

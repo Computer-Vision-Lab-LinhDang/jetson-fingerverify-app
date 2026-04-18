@@ -1,0 +1,19 @@
+[Unit]
+Description=Litestream replication for MDGT Edge SQLite database
+Documentation=https://litestream.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/default/mdgt-litestream
+ExecStart=/usr/local/bin/litestream replicate -config /etc/litestream.yml
+Restart=on-failure
+RestartSec=5s
+# Give Litestream time to drain on shutdown so the last WAL frames ship.
+TimeoutStopSec=30s
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

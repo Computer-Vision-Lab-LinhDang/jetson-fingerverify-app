@@ -127,6 +127,22 @@ class MDGTEdgeMainWindow(QMainWindow):
         self._next_fp_id = 1
         self._load_gallery()
 
+        # Background embedding worker (async enrollment)
+        from mdgt_edge.pipeline.embedding_worker import EmbeddingWorker
+        self._embed_worker = EmbeddingWorker(
+            inference_provider=lambda: self._inference,
+            fp_repo=self._fp_repo,
+            faiss_index=self._faiss_index,
+            preprocess_fn=self._preprocess_for_model,
+            on_done=self._on_embedding_done,
+            on_error=self._on_embedding_error,
+        )
+        self._embed_worker.start()
+        self._last_pending: int = 0
+        self._embed_poll_timer = QTimer(self)
+        self._embed_poll_timer.timeout.connect(self._poll_embed_queue)
+        self._embed_poll_timer.start(1000)
+
         # Ordered startup sequence
         QTimer.singleShot(500, self._run_startup_sequence)
 
@@ -704,7 +720,7 @@ class MDGTEdgeMainWindow(QMainWindow):
             self._identify_tab.on_identify_results([])
 
     def _on_enrollment_complete(self, employee_id: str, samples: list) -> None:
-        """Extract embeddings, save to SQLite + FAISS gallery."""
+        """Save image + DB row synchronously, queue embedding extraction in background."""
         import hashlib
         from mdgt_edge.database.models import User, Fingerprint, UserRole
         print(f"[ENROLL] complete emp={employee_id} samples={len(samples)}", flush=True)
@@ -726,6 +742,7 @@ class MDGTEdgeMainWindow(QMainWindow):
             print(f"[ENROLL] found existing user id={db_user.id}", flush=True)
 
         added = 0
+        queued = 0
         for sample in samples:
             raw = getattr(sample, "image_data", b"")
             w = getattr(sample, "width", 0)
@@ -736,39 +753,22 @@ class MDGTEdgeMainWindow(QMainWindow):
                 continue
 
             img_hash = hashlib.sha256(raw).hexdigest()[:16]
-            embedding_bytes: bytes | None = None
 
-            if self._inference is not None:
-                try:
-                    tensor = self._preprocess_for_model(raw, w, h)
-                    embedding = self._inference.infer_image(tensor)
-                    embedding_bytes = embedding.tobytes()
-                    print(f"[ENROLL] embedding norm={np.linalg.norm(embedding):.4f}", flush=True)
-                except Exception as exc:
-                    print(f"[ENROLL] embedding error: {exc}", flush=True)
-
-            # Save to SQLite
+            # Fast path: save image + pending DB row, no inference here.
             try:
                 db_fp = self._fp_repo.create(Fingerprint(
                     user_id=db_user.id,
                     finger_index=finger_idx,
-                    embedding_enc=embedding_bytes,
+                    embedding_enc=None,
                     quality_score=float(quality),
                     image_hash=img_hash,
                 ))
                 fp_id = db_fp.id
-                print(f"[ENROLL] saved to DB fp_id={fp_id}", flush=True)
-                # Save raw image for identify visualization
+                print(f"[ENROLL] pending row fp_id={fp_id}", flush=True)
                 self._save_fp_image(fp_id, raw, w, h)
             except Exception as exc:
                 print(f"[ENROLL] DB save error: {exc}", flush=True)
-                fp_id = self._next_fp_id
-                self._next_fp_id += 1
-
-            # Add to FAISS index
-            if embedding_bytes is not None:
-                emb_vec = np.frombuffer(embedding_bytes, dtype=np.float32)
-                self._faiss_index.add(emb_vec, fp_id)
+                continue
 
             self._enrolled_users[fp_id] = {
                 "employee_id": employee_id,
@@ -776,21 +776,28 @@ class MDGTEdgeMainWindow(QMainWindow):
                 "department": dept,
                 "finger": finger_idx,
             }
+
+            # Queue async embedding extraction (non-blocking)
+            if self._inference is not None:
+                self._embed_worker.enqueue(fp_id, raw, w, h)
+                queued += 1
             added += 1
 
-        self._save_gallery()
         user_count = self._user_repo.count(active_only=True)
         fp_count = self._fp_repo.count(active_only=True)
         self.update_user_count(user_count)
         self.statusBar().showMessage(
-            f"Enrolled {employee_id}: {added} samples saved (DB: {fp_count} fingerprints)",
+            f"Enrolled {employee_id}: {added} sample(s) saved, "
+            f"{queued} queued for embedding",
             5000,
         )
-        self.append_log(f"Enrolled: {employee_id} ({added} samples, gallery: {self._faiss_index.count})")
+        self.append_log(
+            f"Enrolled: {employee_id} ({added} samples, {queued} queued)"
+        )
 
         self._auto_led_feedback("enrollment_complete")
 
-        # Auto-refresh database tab
+        # Auto-refresh database tab (gallery size will grow as worker finishes)
         self._refresh_database_tab()
 
     def _refresh_database_tab(self) -> None:
@@ -1044,11 +1051,19 @@ class MDGTEdgeMainWindow(QMainWindow):
     def _preprocess_for_model(
         raw_bytes: bytes, width: int, height: int, model_size: int = 224,
     ) -> np.ndarray:
-        """Convert raw grayscale sensor bytes to (1, 3, 224, 224) float32 tensor."""
+        """Convert raw grayscale sensor bytes to (1, 3, 224, 224) float32 tensor.
+
+        Applies gradient-based ridge deskew before CLAHE so enroll and identify
+        images are rotation-normalised.
+        """
         import cv2
+        from mdgt_edge.pipeline.orientation import deskew
         gray = np.frombuffer(raw_bytes, dtype=np.uint8).copy().reshape((height, width))
+        deskewed, angle = deskew(gray)
+        if abs(angle) > 0:
+            logger.debug("deskew applied: %.2f deg", angle)
         clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        enhanced = clahe.apply(deskewed)
         resized = cv2.resize(enhanced, (model_size, model_size), interpolation=cv2.INTER_LINEAR)
         rgb = np.stack([resized, resized, resized], axis=0).astype(np.float32) / 255.0
         return np.expand_dims(rgb, axis=0)
@@ -1264,10 +1279,50 @@ class MDGTEdgeMainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         """Save state and confirm exit."""
         self._device_timer.stop()
+        self._embed_poll_timer.stop()
+        self._embed_worker.stop(timeout=3.0)
         self._sensor_service.stop()
         self._sensor_service.wait(3000)
+        self._save_gallery()
         self._save_state()
         event.accept()
+
+    # ------------------------------------------------------------------
+    # Async embedding worker glue
+    # ------------------------------------------------------------------
+
+    def _poll_embed_queue(self) -> None:
+        """Periodic UI update: show pending count, refresh when queue drains."""
+        pending = self._embed_worker.pending
+        if pending > 0:
+            self._stats_label.setText(
+                f"Users: {self._user_repo.count(active_only=True)}\n"
+                f"Templates pending: {pending}"
+            )
+        elif self._last_pending > 0 and pending == 0:
+            # Queue just drained — refresh gallery stats
+            try:
+                fp_count = self._fp_repo.count(active_only=True)
+                self.statusBar().showMessage(
+                    f"All embeddings ready ({fp_count} fingerprints in gallery)", 3000
+                )
+                self._refresh_database_tab()
+                self._save_gallery()
+            except Exception as exc:
+                logger.warning("post-drain refresh failed: %s", exc)
+        self._last_pending = pending
+
+    def _on_embedding_done(self, fp_id: int, embedding: np.ndarray) -> None:
+        """Worker-thread callback when a single embedding completes.
+
+        Runs in the worker thread — do NOT touch Qt widgets directly here.
+        """
+        logger.debug("embedding done fp_id=%s norm=%.4f",
+                     fp_id, float(np.linalg.norm(embedding)))
+
+    def _on_embedding_error(self, fp_id: int, exc: Exception) -> None:
+        """Worker-thread callback on failure (still no Qt widgets here)."""
+        logger.warning("embedding failed fp_id=%s: %s", fp_id, exc)
 
 
 def main() -> int:
